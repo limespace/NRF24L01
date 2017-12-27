@@ -1,7 +1,14 @@
 #ifndef NRF24L01_H_
 #define NRF24L01_H_
 
-#include "stm32f4xx_hal.h"
+#if defined(STM32L4)
+	#include "stm32l4xx_hal.h"
+#elif defined(STM32F4)
+	#include "stm32f4xx_hal.h"
+#else
+ 	 #error "Please define your STM32 family"
+#endif
+
 #include <stdint.h>
 
 /* Registers */
