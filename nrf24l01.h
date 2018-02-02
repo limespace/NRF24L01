@@ -39,6 +39,12 @@
 #define NRF_DYNPD		0x1C
 #define NRF_FEATURE		0x1D
 
+/* FEATURE BITS */
+#define EN_DPL 			2
+#define EN_ACK_PAY		1
+#define EN_DYN_ACK		0
+
+
 /* Commands */
 #define NRF_CMD_R_REGISTER			0x00
 #define NRF_CMD_W_REGISTER			0x20
@@ -100,7 +106,7 @@ typedef struct {
     uint8_t				RetransmitCount;
     uint8_t				RetransmitDelay;
 
-    uint8_t				BUSY_FLAG;
+    volatile uint8_t	BUSY_FLAG;
 
     /* Usr interface, Rx/Tx Buffer */
     uint8_t*			RX_BUFFER;
@@ -114,8 +120,10 @@ typedef struct {
        Pipe [0:1] has maximum 5 Bytes address
        Pipe [2:5] has 3 Bytes address
     */
-    uint8_t*			RX_ADDRESS;
     uint8_t*			TX_ADDRESS;
+    uint8_t*			RX_ADDRESS_P0;
+    uint8_t*			RX_ADDRESS_P1;
+
 
     /* STM32 SPI Peripheral HAL handle */
     SPI_HandleTypeDef*  spi;
@@ -151,9 +159,15 @@ void NRF_IRQ_Handler(nrf24l01_dev* dev);
 NRF_RESULT NRF_SendPacket(nrf24l01_dev* dev,uint8_t* data);
 NRF_RESULT NRF_ReceivePacket(nrf24l01_dev* dev,uint8_t* data);
 
+
 /* Non-Blocking Data Sending / Receiving FXs */
 NRF_RESULT NRF_PushPacket(nrf24l01_dev* dev,uint8_t* data);
+NRF_RESULT NRF_ReceiveWithCallBack(nrf24l01_dev* dev);
 NRF_RESULT NRF_PullPacket(nrf24l01_dev* dev,uint8_t* data);
+
+
+void NRF_CE_SETPIN(nrf24l01_dev* dev);
+void NRF_CE_RESETPIN(nrf24l01_dev* dev);
 
 /* LOW LEVEL STUFF (you don't have to look in here...)*/
 NRF_RESULT NRF_SendCommand(nrf24l01_dev* dev, uint8_t cmd, uint8_t* tx,uint8_t* rx,uint8_t len);
@@ -187,6 +201,7 @@ NRF_RESULT NRF_SetAddressWidth(nrf24l01_dev* dev,NRF_ADDR_WIDTH width);
 NRF_RESULT NRF_EnableRXPipe(nrf24l01_dev* dev,uint8_t pipe);
 
 /* EN_AA */
+NRF_RESULT NRF_EnableAutoAcknowledgementA(nrf24l01_dev* dev);
 NRF_RESULT NRF_EnableAutoAcknowledgement(nrf24l01_dev* dev,uint8_t pipe);
 
 /* CONFIG */
@@ -200,6 +215,8 @@ NRF_RESULT NRF_EnableMaxRetransmitIRQ(nrf24l01_dev* dev,uint8_t activate);
 
 /* RX_ADDR_P0 */
 NRF_RESULT NRF_SetRXAddress_P0(nrf24l01_dev* dev,uint8_t* address);	// 5bytes of address
+/* RX_ADDR_P1 */
+NRF_RESULT NRF_SetRXAddress_P1(nrf24l01_dev* dev,uint8_t* address);	// 5bytes of address
 
 /* TX_ADDR */
 NRF_RESULT NRF_SetTXAddress(nrf24l01_dev* dev,uint8_t* address);	// 5bytes of address
@@ -208,5 +225,10 @@ NRF_RESULT NRF_SetTXAddress(nrf24l01_dev* dev,uint8_t* address);	// 5bytes of ad
 NRF_RESULT NRF_SetRXPayloadWidth_P0(nrf24l01_dev* dev,uint8_t width);
 
 /* FEATURE */
+NRF_RESULT NRF_EnableDynamicPayload(nrf24l01_dev* dev,uint8_t activate);
+NRF_RESULT NRF_EnableDynamicPayloadPipes(nrf24l01_dev* dev);
+
+/* CALLBACKS */
+void NRF_CallBackDataReceived();
 
 #endif /* NRF24L01_H_ */

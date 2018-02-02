@@ -9,11 +9,11 @@ static void NRF_CS_RESETPIN(nrf24l01_dev* dev) {
 	HAL_GPIO_WritePin(dev->NRF_CSN_GPIOx, dev->NRF_CSN_GPIO_PIN, GPIO_PIN_RESET);
 }
 
-static void NRF_CE_SETPIN(nrf24l01_dev* dev) {
+void NRF_CE_SETPIN(nrf24l01_dev* dev) {
 	HAL_GPIO_WritePin(dev->NRF_CE_GPIOx, dev->NRF_CE_GPIO_PIN, GPIO_PIN_SET);
 }
 
-static void NRF_CE_RESETPIN(nrf24l01_dev* dev) {
+void NRF_CE_RESETPIN(nrf24l01_dev* dev) {
 	HAL_GPIO_WritePin(dev->NRF_CE_GPIOx, dev->NRF_CE_GPIO_PIN, GPIO_PIN_RESET);
 }
 
@@ -21,10 +21,19 @@ static NRF_RESULT NRF_SetupGPIO(nrf24l01_dev* dev) {
 
 	GPIO_InitTypeDef GPIO_InitStructure;
 
+	// CSN pin
+	GPIO_InitStructure.Pin = dev->NRF_CSN_GPIO_PIN;
+	GPIO_InitStructure.Mode = GPIO_MODE_OUTPUT_PP;
+	GPIO_InitStructure.Speed = GPIO_SPEED_HIGH;
+	GPIO_InitStructure.Pull = GPIO_NOPULL;
+
+	HAL_GPIO_Init(dev->NRF_CSN_GPIOx, &GPIO_InitStructure);
+	// end CSN pin
+
 	// CE pin
 	GPIO_InitStructure.Pin = dev->NRF_CE_GPIO_PIN;
 	GPIO_InitStructure.Mode = GPIO_MODE_OUTPUT_PP;
-	GPIO_InitStructure.Speed = GPIO_SPEED_MEDIUM;
+	GPIO_InitStructure.Speed = GPIO_SPEED_HIGH;
 	GPIO_InitStructure.Pull = GPIO_NOPULL;
 
 	HAL_GPIO_Init(dev->NRF_CE_GPIOx, &GPIO_InitStructure);
@@ -56,32 +65,46 @@ NRF_RESULT NRF_Init(nrf24l01_dev* dev) {
 
 	uint8_t config = 0;
 
-	while((config&2) == 0) {	// wait for powerup
+	while((config & 2) == 0) {	// wait for powerup
 		NRF_ReadRegister(dev, NRF_CONFIG, &config);
 	}
 
-	NRF_SetRXPayloadWidth_P0(dev, dev->PayloadLength);
-	NRF_SetRXAddress_P0(dev, dev->RX_ADDRESS);
+	NRF_EnableAutoAcknowledgementA(dev);
+	NRF_EnableDynamicPayload(dev, 1);
+	NRF_EnableDynamicPayloadPipes(dev);
+
+	//NRF_SetRXPayloadWidth_P0(dev, dev->PayloadLength);
+
 	NRF_SetTXAddress(dev, dev->TX_ADDRESS);
+
+	NRF_SetRXAddress_P0(dev, dev->RX_ADDRESS_P0);
+	NRF_EnableRXPipe(dev, 0);
+
+	if (dev-> RX_ADDRESS_P1 != NULL) {
+		NRF_SetRXAddress_P1(dev, dev->RX_ADDRESS_P1);
+		NRF_EnableRXPipe(dev, 1);
+	}
+
 	NRF_EnableRXDataReadyIRQ(dev, 1);
 	NRF_EnableTXDataSentIRQ(dev, 1);
+
 	NRF_EnableMaxRetransmitIRQ(dev, 1);
-	NRF_EnableCRC(dev, 1);
+
 	NRF_SetCRCWidth(dev, dev->CRC_WIDTH);
+	NRF_EnableCRC(dev, 1);
+
 	NRF_SetAddressWidth(dev, dev->ADDR_WIDTH);
 	NRF_SetRFChannel(dev, dev->RF_CHANNEL);
 	NRF_SetDataRate(dev, dev->DATA_RATE);
 	NRF_SetRetransmittionCount(dev, dev->RetransmitCount);
 	NRF_SetRetransmittionDelay(dev, dev->RetransmitDelay);
 
-	NRF_EnableRXPipe(dev, 0);
-	NRF_EnableAutoAcknowledgement(dev, 0);
-
 	NRF_ClearInterrupts(dev);
 
 	NRF_RXTXControl(dev, NRF_STATE_RX);
 
 	NRF_FlushRX(dev);
+	NRF_FlushTX(dev);
 
 	return NRF_OK;
 }
@@ -99,8 +122,7 @@ NRF_RESULT NRF_SendCommand(nrf24l01_dev* dev, uint8_t cmd, uint8_t* tx, uint8_t*
 	}
 
 	NRF_CS_RESETPIN(dev);
-	if (HAL_SPI_TransmitReceive(dev->spi, myTX, myRX, 1 + len, NRF_SPI_TIMEOUT)
-			!= HAL_OK) {
+	if (HAL_SPI_TransmitReceive(dev->spi, myTX, myRX, 1 + len, NRF_SPI_TIMEOUT) != HAL_OK) {
 		return NRF_ERROR;
 	}
 
@@ -125,6 +147,7 @@ void NRF_IRQ_Handler(nrf24l01_dev* dev) {
 		NRF_WriteRegister(dev, NRF_STATUS, &status);
 		NRF_ReadRegister(dev, NRF_FIFO_STATUS, &fifo_status);
 		if (dev->BUSY_FLAG == 1 && (fifo_status & 1) == 0) {
+			memset(dev->RX_BUFFER,0,33);
 			NRF_ReadRXPayload(dev, dev->RX_BUFFER);
 			status |= 1 << 6;
 			NRF_WriteRegister(dev, NRF_STATUS, &status);
@@ -132,6 +155,7 @@ void NRF_IRQ_Handler(nrf24l01_dev* dev) {
 			dev->BUSY_FLAG=0;
 		}
 		NRF_CE_SETPIN(dev);
+		NRF_CallBackDataReceived();
 	}
 	if ((status & (1 << 5))) {	// TX Data Sent Interrupt
 		status |= 1 << 5;	// clear the interrupt flag
@@ -156,6 +180,9 @@ void NRF_IRQ_Handler(nrf24l01_dev* dev) {
 
 		NRF_WriteRegister(dev, NRF_STATUS, &status);
 		dev->BUSY_FLAG=0;
+
+		HAL_GPIO_WritePin(DBG_PIN_GPIO_Port, DBG_PIN_Pin,  GPIO_PIN_SET);
+
 	}
 }
 
@@ -178,9 +205,16 @@ NRF_RESULT NRF_WriteRegister(nrf24l01_dev* dev, uint8_t reg, uint8_t* data) {
 }
 
 NRF_RESULT NRF_ReadRXPayload(nrf24l01_dev* dev, uint8_t* data) {
-	uint8_t tx[dev->PayloadLength];
-	if (NRF_SendCommand(dev, NRF_CMD_R_RX_PAYLOAD, tx, data, dev->PayloadLength)
-			!= NRF_OK) {
+
+	uint8_t plLen = 0;
+
+	if (NRF_SendCommand(dev, NRF_CMD_R_RX_PL_WID, &plLen, &plLen, 1) != NRF_OK) {
+			return NRF_ERROR;
+	}
+
+	uint8_t tx[plLen];
+
+	if (NRF_SendCommand(dev, NRF_CMD_R_RX_PAYLOAD, tx, data, plLen) != NRF_OK) {
 		return NRF_ERROR;
 	}
 	return NRF_OK;
@@ -188,8 +222,7 @@ NRF_RESULT NRF_ReadRXPayload(nrf24l01_dev* dev, uint8_t* data) {
 
 NRF_RESULT NRF_WriteTXPayload(nrf24l01_dev* dev, uint8_t* data) {
 	uint8_t rx[dev->PayloadLength];
-	if (NRF_SendCommand(dev, NRF_CMD_W_TX_PAYLOAD, data, rx, dev->PayloadLength)
-			!= NRF_OK) {
+	if (NRF_SendCommand(dev, NRF_CMD_W_TX_PAYLOAD, data, rx, dev->PayloadLength) != NRF_OK) {
 		return NRF_ERROR;
 	}
 	return NRF_OK;
@@ -362,15 +395,24 @@ NRF_RESULT NRF_EnableRXPipe(nrf24l01_dev* dev, uint8_t pipe) {
 	return NRF_OK;
 }
 
+NRF_RESULT NRF_EnableAutoAcknowledgementA(nrf24l01_dev* dev) {
+	uint8_t regValue = 0b111111;
+
+	if (NRF_WriteRegister(dev, NRF_EN_AA, &regValue) != NRF_OK) {
+		return NRF_ERROR;
+	}
+	return NRF_OK;
+}
+
 NRF_RESULT NRF_EnableAutoAcknowledgement(nrf24l01_dev* dev, uint8_t pipe) {
-	uint8_t reg = 0;
-	if (NRF_ReadRegister(dev, NRF_EN_AA, &reg) != NRF_OK) {
+	uint8_t regValue = 0;
+	if (NRF_ReadRegister(dev, NRF_EN_AA, &regValue) != NRF_OK) {
 		return NRF_ERROR;
 	}
 
-	reg |= 1 << pipe;
+	regValue |= 1 << pipe;
 
-	if (NRF_WriteRegister(dev, NRF_EN_AA, &reg) != NRF_OK) {
+	if (NRF_WriteRegister(dev, NRF_EN_AA, &regValue) != NRF_OK) {
 		return NRF_ERROR;
 	}
 	return NRF_OK;
@@ -410,6 +452,37 @@ NRF_RESULT NRF_SetCRCWidth(nrf24l01_dev* dev, NRF_CRC_WIDTH width) {
 		return NRF_ERROR;
 	}
 	dev->CRC_WIDTH = width;
+	return NRF_OK;
+}
+
+NRF_RESULT NRF_EnableDynamicPayload(nrf24l01_dev* dev,uint8_t activate) {
+	uint8_t reg = 0;
+	if (NRF_ReadRegister(dev, NRF_FEATURE, &reg) != NRF_OK) {
+		return NRF_ERROR;
+	}
+
+	if (activate) {
+		reg |= 1 << EN_DPL;
+	}else {
+		reg &= ~(1 << EN_DPL);
+	}
+
+	if (NRF_WriteRegister(dev, NRF_FEATURE, &reg) != NRF_OK) {
+			return NRF_ERROR;
+	}
+
+
+
+	return NRF_OK;
+}
+
+NRF_RESULT NRF_EnableDynamicPayloadPipes(nrf24l01_dev* dev) {
+	uint8_t regValue = 0b00111111;
+
+	if (NRF_WriteRegister(dev, NRF_DYNPD, &regValue) != NRF_OK) {
+			return NRF_ERROR;
+	}
+
 	return NRF_OK;
 }
 
@@ -501,11 +574,19 @@ NRF_RESULT NRF_EnableMaxRetransmitIRQ(nrf24l01_dev* dev, uint8_t activate) {
 
 NRF_RESULT NRF_SetRXAddress_P0(nrf24l01_dev* dev, uint8_t* address) {
 	uint8_t rx[5];
-	if (NRF_SendCommand(dev, NRF_CMD_W_REGISTER | NRF_RX_ADDR_P0, address, rx,
-			5) != NRF_OK) {
+	if (NRF_SendCommand(dev, NRF_CMD_W_REGISTER | NRF_RX_ADDR_P0, address, rx, 5) != NRF_OK) {
 		return NRF_ERROR;
 	}
-	dev->RX_ADDRESS = address;
+	dev->RX_ADDRESS_P0 = address;
+	return NRF_OK;
+}
+
+NRF_RESULT NRF_SetRXAddress_P1(nrf24l01_dev* dev, uint8_t* address) {
+	uint8_t rx[5];
+	if (NRF_SendCommand(dev, NRF_CMD_W_REGISTER | NRF_RX_ADDR_P1, address, rx, 5) != NRF_OK) {
+		return NRF_ERROR;
+	}
+	dev->RX_ADDRESS_P1 = address;
 	return NRF_OK;
 }
 
@@ -584,5 +665,21 @@ NRF_RESULT NRF_PullPacket(nrf24l01_dev* dev, uint8_t* data) {
 	}
 
 	return NRF_OK;
+}
+
+NRF_RESULT NRF_ReceiveWithCallBack(nrf24l01_dev* dev) {
+
+	NRF_FlushRX(dev);
+	dev->BUSY_FLAG = 1;
+
+	NRF_CE_RESETPIN(dev);
+	NRF_RXTXControl(dev, NRF_STATE_RX);
+	NRF_CE_SETPIN(dev);
+
+	return NRF_OK;
+}
+
+__weak void NRF_CallBackDataReceived() {
+
 }
 
